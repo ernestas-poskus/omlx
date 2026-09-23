@@ -171,7 +171,9 @@ def resolve_qwen35_prefill_conflicts(data: dict) -> tuple:
     dicts that predate the exclusivity rule so ``__post_init__`` does not
     reject the whole blob.
     """
-    if not (data.get("qwen35_oq_a8_enabled") and data.get("qwen35_ane_prefill_enabled")):
+    if not (
+        data.get("qwen35_oq_a8_enabled") and data.get("qwen35_ane_prefill_enabled")
+    ):
         return data, []
     resolved = dict(data)
     resolved["qwen35_oq_a8_enabled"] = False
@@ -298,10 +300,11 @@ class ModelSettings:
         display_name: Human-readable name for UI display.
         description: Optional description of the model.
         active_profile_name: Name of the currently-applied profile (None = no profile).
-        embedding_dtype: Embedding-model compute dtype. None = auto: cast a
-            bfloat16 checkpoint to float16 on load (bf16 embedding matmuls round
-            activations to bf16 and miss the 1e-3 conformance gate).
-            "float16"/"float32" force the cast; "auto" is an alias for None.
+        embedding_dtype: Embedding-model compute dtype. None = auto: cast
+            bfloat16 Qwen3-Embedding checkpoints to float16 on load (bf16
+            embedding matmuls round activations to bf16 and miss the 1e-3
+            conformance gate). "float16"/"float32" force the cast; "auto" is
+            an alias for None.
     """
 
     # Sampling parameters (None means use global default)
@@ -482,7 +485,7 @@ class ModelSettings:
     display_name: Optional[str] = None
     description: Optional[str] = None
     active_profile_name: Optional[str] = None  # Name of the currently-applied profile
-    # Embedding compute dtype (None/auto = promote a bfloat16 checkpoint to fp16).
+    # Embedding compute dtype (None/auto = promote bfloat16 Qwen3-Embedding checkpoints to fp16).
     embedding_dtype: Optional[str] = None
 
     def __post_init__(self) -> None:
@@ -491,9 +494,7 @@ class ModelSettings:
             "float16",
             "float32",
         ):
-            raise ValueError(
-                "embedding_dtype must be one of: auto, float16, float32"
-            )
+            raise ValueError("embedding_dtype must be one of: auto, float16, float32")
         if self.qwen35_oq_a8_enabled and self.qwen35_oq_a8_min_tokens < 1:
             raise ValueError("qwen35_oq_a8_min_tokens must be at least 1")
         # Both accelerate the same Qwen3.5 prefill projections by wrapping

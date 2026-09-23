@@ -92,8 +92,8 @@ class MLXEmbeddingModel:
             trust_remote_code: Allow execution of custom Python shipped inside
                 the model repository. Off by default for security (issue #926).
             embedding_dtype: Compute dtype override ("auto" | "float16" |
-                "float32" | None). None/"auto" promotes a bfloat16 checkpoint
-                to float16 on load.
+                "float32" | None). None/"auto" promotes bfloat16 checkpoints
+                of Qwen3-Embedding models to float16 on load.
         """
         self.model_name = model_name
         self.trust_remote_code = trust_remote_code
@@ -110,14 +110,59 @@ class MLXEmbeddingModel:
         self._pooling_mode: Optional[str] = None
         self._pooling_source: str = "not resolved"
 
+    def _is_qwen3_embedding(self, module: Any = None) -> bool:
+        """Check if this is a Qwen3-Embedding family model."""
+        haystack_parts = [str(self.model_name).lower()]
+
+        model_path = Path(self.model_name)
+        config_path = model_path / "config.json"
+        if config_path.is_file():
+            try:
+                with open(config_path) as fh:
+                    cfg = json.load(fh)
+                if isinstance(cfg, dict):
+                    haystack_parts.append(str(cfg.get("_name_or_path", "")).lower())
+                    haystack_parts.append(str(cfg.get("model_type", "")).lower())
+                    for arch in cfg.get("architectures", []):
+                        haystack_parts.append(str(arch).lower())
+            except (OSError, ValueError):
+                pass
+
+        if module is not None:
+            mod_type = type(module)
+            haystack_parts.append(mod_type.__module__.lower())
+            haystack_parts.append(mod_type.__name__.lower())
+            cfg = getattr(module, "config", None)
+            if cfg is not None:
+                if isinstance(cfg, dict):
+                    haystack_parts.append(str(cfg.get("_name_or_path", "")).lower())
+                    haystack_parts.append(str(cfg.get("model_type", "")).lower())
+                    for arch in cfg.get("architectures", []):
+                        haystack_parts.append(str(arch).lower())
+                else:
+                    haystack_parts.append(str(getattr(cfg, "_name_or_path", "")).lower())
+                    haystack_parts.append(str(getattr(cfg, "model_type", "")).lower())
+                    for arch in getattr(cfg, "architectures", None) or []:
+                        haystack_parts.append(str(arch).lower())
+
+        haystack = " ".join(haystack_parts)
+        is_qwen3 = "qwen3" in haystack
+        is_emb = (
+            "embed" in haystack
+            or "qwen3fortextembedding" in haystack
+            or "mlx_embeddings.models.qwen3" in haystack
+        )
+        return is_qwen3 and is_emb
+
     def _resolve_embedding_dtype(self, module):
         """Target compute dtype for a loaded module, or None to leave it as-is.
 
-        ``auto``/``None`` promotes a bfloat16 checkpoint to float16: bf16 MLX
-        embedding matmuls round activations to bf16 and miss the 1e-3
-        conformance gate (measured max|delta| 0.0037, vs 0.0006 for the
-        identical weights computed in fp16). Explicit ``float32``/``float16``
-        force the cast.
+        ``auto``/``None`` promotes bfloat16 checkpoints to float16 for
+        Qwen3-Embedding models: bf16 MLX embedding matmuls round activations
+        to bf16 and miss the 1e-3 conformance gate (measured max|delta| 0.0037,
+        vs 0.0006 for the identical weights computed in fp16). Other model
+        families remain unchanged under ``auto``/``None``. Explicit
+        ``float32``/``float16`` force the cast.
         """
         requested = self.embedding_dtype
         if requested == "float32":
@@ -128,7 +173,7 @@ class MLXEmbeddingModel:
             raise ValueError(
                 "embedding_dtype must be one of: auto, float16, float32"
             )
-        if module is None:
+        if module is None or not self._is_qwen3_embedding(module):
             return None
         for _, value in tree_flatten(module.parameters()):
             if isinstance(value, mx.array) and value.dtype == mx.bfloat16:

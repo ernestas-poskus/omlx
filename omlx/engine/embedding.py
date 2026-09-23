@@ -63,7 +63,8 @@ class EmbeddingEngine(BaseNonStreamingEngine):
             scheduler_config: Shared scheduler configuration. Embedding uses
                 embedding_batch_size as its per-forward input chunk size.
             embedding_dtype: Embedding compute dtype override
-                ("auto" | "float16" | "float32" | None).
+                ("auto" | "float16" | "float32" | None). None/"auto" promotes
+                bfloat16 checkpoints of Qwen3-Embedding models to float16.
         """
         super().__init__()
         self._model_name = model_name
@@ -177,7 +178,9 @@ class EmbeddingEngine(BaseNonStreamingEngine):
             # A batch pads every input to its longest member, so a batch of mixed lengths spends
             # most of its compute on padding. Group similar lengths together and restore the
             # caller's order before returning, which leaves the response contract unchanged.
-            order = sorted(range(len(input_items)), key=lambda i: _input_length(input_items[i]))
+            order = sorted(
+                range(len(input_items)), key=lambda i: _input_length(input_items[i])
+            )
             ordered_items = [input_items[i] for i in order]
 
             fairness = self._fairness
@@ -186,7 +189,7 @@ class EmbeddingEngine(BaseNonStreamingEngine):
                 # Limit each forward while another engine is decoding.
                 cap = fairness.chunk_cap()
                 size = batch_size if cap is None else max(1, min(batch_size, cap))
-                batch = ordered_items[index:index + size]
+                batch = ordered_items[index : index + size]
                 index += len(batch)
 
                 def _embed_sync(batch=batch):

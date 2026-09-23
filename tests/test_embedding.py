@@ -1982,7 +1982,7 @@ class TestDeclaredPoolingMode:
 
 
 class TestEmbeddingDtype:
-    """The bf16 -> fp16 compute promotion for embedding models."""
+    """The bf16 -> fp16 compute promotion for Qwen3-Embedding models."""
 
     class _Module:
         def __init__(self, weight):
@@ -1994,23 +1994,44 @@ class TestEmbeddingDtype:
         def update(self, tree):
             self._params = tree
 
-    def test_auto_promotes_bfloat16(self):
+    def test_auto_promotes_bfloat16_for_qwen3(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
 
-        m = MLXEmbeddingModel("dummy")
-        assert (
-            m._resolve_embedding_dtype(self._Module(mx.zeros((2,), dtype=mx.bfloat16)))
-            == mx.float16
-        )
+        for name in (
+            "Qwen/Qwen3-Embedding-0.6B",
+            "mlx-community/Qwen3-Embedding-8B-mxfp8",
+            "Qwen3-VL-Embedding-2B",
+        ):
+            m = MLXEmbeddingModel(name)
+            assert (
+                m._resolve_embedding_dtype(
+                    self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+                )
+                == mx.float16
+            )
+
+    def test_auto_leaves_bfloat16_for_other_models(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        for name in ("dummy", "BAAI/bge-m3", "answerdotai/ModernBERT-base"):
+            m = MLXEmbeddingModel(name)
+            assert (
+                m._resolve_embedding_dtype(
+                    self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+                )
+                is None
+            )
 
     def test_auto_leaves_float16(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
 
-        m = MLXEmbeddingModel("dummy")
+        m = MLXEmbeddingModel("Qwen/Qwen3-Embedding-0.6B")
         assert (
             m._resolve_embedding_dtype(self._Module(mx.zeros((2,), dtype=mx.float16)))
             is None
@@ -2027,6 +2048,19 @@ class TestEmbeddingDtype:
             == mx.float32
         )
 
+    def test_explicit_float16(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        m = MLXEmbeddingModel("dummy", embedding_dtype="float16")
+        assert (
+            m._resolve_embedding_dtype(
+                self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+            )
+            == mx.float16
+        )
+
     def test_invalid_dtype_rejected(self):
         from omlx.models.embedding import MLXEmbeddingModel
 
@@ -2034,11 +2068,55 @@ class TestEmbeddingDtype:
         with pytest.raises(ValueError):
             m._resolve_embedding_dtype(None)
 
-    def test_apply_casts_bfloat16_params(self):
+    def test_apply_casts_bfloat16_params_for_qwen3(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
 
         mod = self._Module(mx.zeros((2,), dtype=mx.bfloat16))
-        MLXEmbeddingModel("dummy")._apply_embedding_dtype(mod)
+        MLXEmbeddingModel("Qwen/Qwen3-Embedding-0.6B")._apply_embedding_dtype(mod)
         assert mod._params["weight"].dtype == mx.float16
+
+    def test_apply_leaves_non_qwen3_params_untouched(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        mod = self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+        MLXEmbeddingModel("BAAI/bge-m3")._apply_embedding_dtype(mod)
+        assert mod._params["weight"].dtype == mx.bfloat16
+
+    def test_detection_from_config_json(self, tmp_path):
+        import json
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"architectures": ["Qwen3ForTextEmbedding"]})
+        )
+        m = MLXEmbeddingModel(str(tmp_path))
+        assert (
+            m._resolve_embedding_dtype(
+                self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+            )
+            == mx.float16
+        )
+
+    def test_detection_from_mlx_embeddings_module(self):
+        import types
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        fake_cls = type(
+            "Model",
+            (),
+            {
+                "__module__": "mlx_embeddings.models.qwen3",
+                "parameters": lambda self: {"w": mx.zeros((2,), dtype=mx.bfloat16)},
+            },
+        )
+        mod = fake_cls()
+        m = MLXEmbeddingModel("opaque_path")
+        assert m._resolve_embedding_dtype(mod) == mx.float16
