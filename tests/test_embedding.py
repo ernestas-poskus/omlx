@@ -816,9 +816,7 @@ class TestEmbeddingEngine:
 
             asyncio.run(engine.start())
 
-            MockModel.assert_called_once_with(
-                "test-model", trust_remote_code=False, embedding_dtype=None
-            )
+            MockModel.assert_called_once_with("test-model", trust_remote_code=False)
             mock_model.load.assert_called_once()
 
             asyncio.run(engine.stop())
@@ -1982,7 +1980,7 @@ class TestDeclaredPoolingMode:
 
 
 class TestEmbeddingDtype:
-    """The bf16 -> fp16 compute promotion for Qwen3-Embedding models."""
+    """The bf16 -> fp16 compute promotion for tested non-quantized Qwen3-Embedding models."""
 
     class _Module:
         def __init__(self, weight):
@@ -1994,15 +1992,15 @@ class TestEmbeddingDtype:
         def update(self, tree):
             self._params = tree
 
-    def test_auto_promotes_bfloat16_for_qwen3(self):
+    def test_promotes_bfloat16_for_tested_qwen3_models(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
 
         for name in (
             "Qwen/Qwen3-Embedding-0.6B",
-            "mlx-community/Qwen3-Embedding-8B-mxfp8",
-            "Qwen3-VL-Embedding-2B",
+            "Qwen/Qwen3-Embedding-8B",
+            "mlx-community/Qwen3-Embedding-8B-bf16",
         ):
             m = MLXEmbeddingModel(name)
             assert (
@@ -2012,7 +2010,56 @@ class TestEmbeddingDtype:
                 == mx.float16
             )
 
-    def test_auto_leaves_bfloat16_for_other_models(self):
+    def test_leaves_bfloat16_for_qwen3_vl(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        for name in (
+            "Qwen/Qwen3-VL-Embedding-2B",
+            "Qwen/Qwen3-VL-Embedding-8B",
+            "mlx-community/Qwen3-VL-Embedding-8B",
+        ):
+            m = MLXEmbeddingModel(name)
+            assert (
+                m._resolve_embedding_dtype(
+                    self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+                )
+                is None
+            )
+
+    def test_leaves_bfloat16_for_quantized_qwen3(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        for name in (
+            "mlx-community/Qwen3-Embedding-8B-4bit",
+            "mlx-community/Qwen3-Embedding-8B-mxfp8",
+            "mlx-community/Qwen3-Embedding-0.6B-8bit",
+        ):
+            m = MLXEmbeddingModel(name)
+            assert (
+                m._resolve_embedding_dtype(
+                    self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+                )
+                is None
+            )
+
+    def test_leaves_bfloat16_for_untested_sizes(self):
+        import mlx.core as mx
+
+        from omlx.models.embedding import MLXEmbeddingModel
+
+        m = MLXEmbeddingModel("Qwen/Qwen3-Embedding-4B")
+        assert (
+            m._resolve_embedding_dtype(
+                self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+            )
+            is None
+        )
+
+    def test_leaves_bfloat16_for_other_models(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
@@ -2026,7 +2073,7 @@ class TestEmbeddingDtype:
                 is None
             )
 
-    def test_auto_leaves_float16(self):
+    def test_leaves_float16_weights_untouched(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
@@ -2037,38 +2084,7 @@ class TestEmbeddingDtype:
             is None
         )
 
-    def test_explicit_float32(self):
-        import mlx.core as mx
-
-        from omlx.models.embedding import MLXEmbeddingModel
-
-        m = MLXEmbeddingModel("dummy", embedding_dtype="float32")
-        assert (
-            m._resolve_embedding_dtype(self._Module(mx.zeros((2,), dtype=mx.float16)))
-            == mx.float32
-        )
-
-    def test_explicit_float16(self):
-        import mlx.core as mx
-
-        from omlx.models.embedding import MLXEmbeddingModel
-
-        m = MLXEmbeddingModel("dummy", embedding_dtype="float16")
-        assert (
-            m._resolve_embedding_dtype(
-                self._Module(mx.zeros((2,), dtype=mx.bfloat16))
-            )
-            == mx.float16
-        )
-
-    def test_invalid_dtype_rejected(self):
-        from omlx.models.embedding import MLXEmbeddingModel
-
-        m = MLXEmbeddingModel("dummy", embedding_dtype="int8")
-        with pytest.raises(ValueError):
-            m._resolve_embedding_dtype(None)
-
-    def test_apply_casts_bfloat16_params_for_qwen3(self):
+    def test_apply_casts_bfloat16_params_for_tested_qwen3(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
@@ -2077,14 +2093,20 @@ class TestEmbeddingDtype:
         MLXEmbeddingModel("Qwen/Qwen3-Embedding-0.6B")._apply_embedding_dtype(mod)
         assert mod._params["weight"].dtype == mx.float16
 
-    def test_apply_leaves_non_qwen3_params_untouched(self):
+    def test_apply_leaves_other_models_and_quantized_untouched(self):
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
 
-        mod = self._Module(mx.zeros((2,), dtype=mx.bfloat16))
-        MLXEmbeddingModel("BAAI/bge-m3")._apply_embedding_dtype(mod)
-        assert mod._params["weight"].dtype == mx.bfloat16
+        for name in (
+            "BAAI/bge-m3",
+            "Qwen/Qwen3-VL-Embedding-8B",
+            "mlx-community/Qwen3-Embedding-8B-4bit",
+            "Qwen/Qwen3-Embedding-4B",
+        ):
+            mod = self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+            MLXEmbeddingModel(name)._apply_embedding_dtype(mod)
+            assert mod._params["weight"].dtype == mx.bfloat16
 
     def test_detection_from_config_json(self, tmp_path):
         import json
@@ -2092,8 +2114,12 @@ class TestEmbeddingDtype:
 
         from omlx.models.embedding import MLXEmbeddingModel
 
+        # Target non-quantized model
         (tmp_path / "config.json").write_text(
-            json.dumps({"architectures": ["Qwen3ForTextEmbedding"]})
+            json.dumps({
+                "architectures": ["Qwen3ForTextEmbedding"],
+                "_name_or_path": "Qwen/Qwen3-Embedding-8B",
+            })
         )
         m = MLXEmbeddingModel(str(tmp_path))
         assert (
@@ -2101,6 +2127,22 @@ class TestEmbeddingDtype:
                 self._Module(mx.zeros((2,), dtype=mx.bfloat16))
             )
             == mx.float16
+        )
+
+        # Quantized config should not be promoted
+        (tmp_path / "config.json").write_text(
+            json.dumps({
+                "architectures": ["Qwen3ForTextEmbedding"],
+                "_name_or_path": "Qwen/Qwen3-Embedding-8B",
+                "quantization": {"bits": 4},
+            })
+        )
+        m = MLXEmbeddingModel(str(tmp_path))
+        assert (
+            m._resolve_embedding_dtype(
+                self._Module(mx.zeros((2,), dtype=mx.bfloat16))
+            )
+            is None
         )
 
     def test_detection_from_mlx_embeddings_module(self):
@@ -2118,5 +2160,19 @@ class TestEmbeddingDtype:
             },
         )
         mod = fake_cls()
-        m = MLXEmbeddingModel("opaque_path")
+        # With 8b in name
+        m = MLXEmbeddingModel("qwen3-embedding-8b")
         assert m._resolve_embedding_dtype(mod) == mx.float16
+
+        # With vl module
+        fake_vl_cls = type(
+            "Model",
+            (),
+            {
+                "__module__": "mlx_embeddings.models.qwen3_vl",
+                "parameters": lambda self: {"w": mx.zeros((2,), dtype=mx.bfloat16)},
+            },
+        )
+        mod_vl = fake_vl_cls()
+        m_vl = MLXEmbeddingModel("qwen3-embedding-8b")
+        assert m_vl._resolve_embedding_dtype(mod_vl) is None

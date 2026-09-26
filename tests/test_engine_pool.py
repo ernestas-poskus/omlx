@@ -1800,7 +1800,6 @@ class TestEnginePoolAsync:
             model_name=str(model_path),
             trust_remote_code=False,
             scheduler_config=scheduler_config,
-            embedding_dtype=None,
         )
 
     @pytest.mark.asyncio
@@ -1832,7 +1831,6 @@ class TestEnginePoolAsync:
             model_name=str(model_path),
             trust_remote_code=False,
             scheduler_config=pool._scheduler_config,
-            embedding_dtype=None,
         )
 
     @pytest.mark.asyncio

@@ -78,12 +78,7 @@ class MLXEmbeddingModel:
         >>> print(len(output.embeddings))  # 2
     """
 
-    def __init__(
-        self,
-        model_name: str,
-        trust_remote_code: bool = False,
-        embedding_dtype: Optional[str] = None,
-    ):
+    def __init__(self, model_name: str, trust_remote_code: bool = False):
         """
         Initialize the MLX embedding model.
 
@@ -91,13 +86,9 @@ class MLXEmbeddingModel:
             model_name: HuggingFace model name or local path
             trust_remote_code: Allow execution of custom Python shipped inside
                 the model repository. Off by default for security (issue #926).
-            embedding_dtype: Compute dtype override ("auto" | "float16" |
-                "float32" | None). None/"auto" promotes bfloat16 checkpoints
-                of Qwen3-Embedding models to float16 on load.
         """
         self.model_name = model_name
         self.trust_remote_code = trust_remote_code
-        self.embedding_dtype = embedding_dtype
 
         self.model = None
         self.processor = None
@@ -110,17 +101,21 @@ class MLXEmbeddingModel:
         self._pooling_mode: Optional[str] = None
         self._pooling_source: str = "not resolved"
 
-    def _is_qwen3_embedding(self, module: Any = None) -> bool:
-        """Check if this is a Qwen3-Embedding family model."""
+    def _is_target_qwen3_embedding(self, module: Any = None) -> bool:
+        """Check if this is a tested non-quantized Qwen3-Embedding (0.6B or 8B) model."""
         haystack_parts = [str(self.model_name).lower()]
 
         model_path = Path(self.model_name)
         config_path = model_path / "config.json"
+        is_quantized = False
+
         if config_path.is_file():
             try:
                 with open(config_path) as fh:
                     cfg = json.load(fh)
                 if isinstance(cfg, dict):
+                    if cfg.get("quantization"):
+                        is_quantized = True
                     haystack_parts.append(str(cfg.get("_name_or_path", "")).lower())
                     haystack_parts.append(str(cfg.get("model_type", "")).lower())
                     for arch in cfg.get("architectures", []):
@@ -135,68 +130,86 @@ class MLXEmbeddingModel:
             cfg = getattr(module, "config", None)
             if cfg is not None:
                 if isinstance(cfg, dict):
+                    if cfg.get("quantization"):
+                        is_quantized = True
                     haystack_parts.append(str(cfg.get("_name_or_path", "")).lower())
                     haystack_parts.append(str(cfg.get("model_type", "")).lower())
                     for arch in cfg.get("architectures", []):
                         haystack_parts.append(str(arch).lower())
                 else:
+                    if getattr(cfg, "quantization", None):
+                        is_quantized = True
                     haystack_parts.append(str(getattr(cfg, "_name_or_path", "")).lower())
                     haystack_parts.append(str(getattr(cfg, "model_type", "")).lower())
                     for arch in getattr(cfg, "architectures", None) or []:
                         haystack_parts.append(str(arch).lower())
 
         haystack = " ".join(haystack_parts)
+
         is_qwen3 = "qwen3" in haystack
         is_emb = (
             "embed" in haystack
             or "qwen3fortextembedding" in haystack
             or "mlx_embeddings.models.qwen3" in haystack
         )
-        return is_qwen3 and is_emb
+        is_vl = "vl" in haystack or "qwen3_vl" in haystack or "qwen3vl" in haystack
+        is_tested_size = "0.6b" in haystack or "8b" in haystack
 
-    def _resolve_embedding_dtype(self, module):
+        quant_indicators = (
+            "4bit",
+            "8bit",
+            "mxfp8",
+            "fp8",
+            "int4",
+            "int8",
+            "-q4",
+            "-q8",
+            "q4_",
+            "q8_",
+            "-oq",
+            "awq",
+            "gptq",
+            "quantized",
+        )
+        if any(q in haystack for q in quant_indicators):
+            is_quantized = True
+
+        return is_qwen3 and is_emb and (not is_vl) and is_tested_size and (not is_quantized)
+
+    def _resolve_embedding_dtype(self, module: Any = None):
         """Target compute dtype for a loaded module, or None to leave it as-is.
 
-        ``auto``/``None`` promotes bfloat16 checkpoints to float16 for
-        Qwen3-Embedding models: bf16 MLX embedding matmuls round activations
-        to bf16 and miss the 1e-3 conformance gate (measured max|delta| 0.0037,
-        vs 0.0006 for the identical weights computed in fp16). Other model
-        families remain unchanged under ``auto``/``None``. Explicit
-        ``float32``/``float16`` force the cast.
+        Promotes bfloat16 checkpoints to float16 for tested non-quantized
+        Qwen3-Embedding models (0.6B and 8B): bf16 MLX embedding matmuls round
+        activations to bf16 and miss the 1e-3 conformance gate (measured
+        max|delta| 0.0037, vs 0.0006 for the identical weights computed in
+        fp16). Other model families and quantized variants remain unchanged.
         """
-        requested = self.embedding_dtype
-        if requested == "float32":
-            return mx.float32
-        if requested == "float16":
-            return mx.float16
-        if requested not in (None, "auto"):
-            raise ValueError(
-                "embedding_dtype must be one of: auto, float16, float32"
-            )
-        if module is None or not self._is_qwen3_embedding(module):
+        if module is None or not self._is_target_qwen3_embedding(module):
             return None
         for _, value in tree_flatten(module.parameters()):
             if isinstance(value, mx.array) and value.dtype == mx.bfloat16:
                 return mx.float16
         return None
 
-    def _apply_embedding_dtype(self, module) -> None:
-        """Cast a loaded module's floating parameters to the resolved dtype."""
+    def _apply_embedding_dtype(self, module: Any) -> None:
+        """Promote bfloat16 parameters to float16 for tested Qwen3-Embedding models."""
         target = self._resolve_embedding_dtype(module)
         if target is None or module is None:
             return
         module.update(
             tree_map(
                 lambda a: a.astype(target)
-                if isinstance(a, mx.array)
-                and a.dtype in (mx.bfloat16, mx.float32)
+                if isinstance(a, mx.array) and a.dtype == mx.bfloat16
                 else a,
                 module.parameters(),
             )
         )
         mx.eval(module.parameters())
         logger.info(
-            "Embedding compute dtype for %s: %s", self.model_name, target
+            "Promoted bfloat16 parameters to %s for %s for numerical conformance",
+            target,
+            self.model_name,
         )
 
     # Fallbacks for MLX conversions that dropped the sentence-transformers
