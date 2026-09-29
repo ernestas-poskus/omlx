@@ -2110,6 +2110,7 @@ class TestEmbeddingDtype:
 
     def test_detection_from_config_json(self, tmp_path):
         import json
+
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
@@ -2146,7 +2147,6 @@ class TestEmbeddingDtype:
         )
 
     def test_detection_from_mlx_embeddings_module(self):
-        import types
         import mlx.core as mx
 
         from omlx.models.embedding import MLXEmbeddingModel
