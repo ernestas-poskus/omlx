@@ -269,6 +269,20 @@ class MLXEmbeddingModel:
         mx.eval(module.parameters())
         logger.info("Promoted bfloat16 parameters to float16 for %s", self.model_name)
 
+    def _apply_embedding_dtype(self, module: Any) -> None:
+        """Apply this loader's parameter-dtype policy to a freshly loaded encoder.
+
+        The pyLate/ColBERT path is the second loader in this class that builds an
+        ``mlx-embeddings`` module itself, so it has to end where the native path
+        ends rather than invent a precision of its own. ``ColbertProjection``
+        keeps its matrices as plain arrays and deliberately owns no dtype policy
+        -- MLX promotes activations to the wider of the two dtypes, so the encoder
+        is what decides whether a reduced-precision checkpoint can silently
+        truncate the projection. One named step, so a future dtype policy cannot
+        land on one loader and miss the other.
+        """
+        self._promote_bf16_to_fp16(module)
+
     # Fallbacks for MLX conversions that dropped the sentence-transformers
     # metadata. Reviewed against the concrete checkpoints on the Hub: none of
     # the MLX BGE-M3 / Qwen3-Embedding / Qwen3-VL-Embedding repos ship
